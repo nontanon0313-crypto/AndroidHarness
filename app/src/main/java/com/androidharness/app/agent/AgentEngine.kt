@@ -4,8 +4,10 @@ import com.androidharness.app.core.ChatMessage
 import com.androidharness.app.core.Diff
 import com.androidharness.app.core.Role
 import com.androidharness.app.core.ToolCallData
+import com.androidharness.app.core.JstTimeUtils
 import com.androidharness.app.data.CheckpointStore
 import com.androidharness.app.data.ImageStore
+import com.androidharness.app.data.WorkTimelineRepository
 import com.androidharness.app.llm.LlmProvider
 import com.androidharness.app.llm.ProviderConfig
 import com.androidharness.app.llm.RequestOptions
@@ -273,6 +275,8 @@ class AgentEngine(
     private val markFileBlocksDeclined: suspend (String) -> Unit = {},
     /** Remembers the input window a server named when it rejected a provider|model request as too long. */
     private val learnContextLimit: suspend (String, Int) -> Unit = { _, _ -> },
+    /** 作業タイムライン情報を AI のコンテキストに注入するためのリポジトリ。 */
+    private val workTimelineRepository: com.androidharness.app.data.WorkTimelineRepository,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -2733,7 +2737,88 @@ ${if (appSettings.subagentsEnabled) "- For broad exploration whose raw output wo
                 sb.append("\n# Repository Map (codebase index)\n").append(map).append('\n')
             }
         }
+
+        // === 作業タイムライン情報（AI へのコンテキスト注入）===
+        // sessionId が null の場合や WorkTimelineRepository が未設定の場合はスキップ。
+        if (sessionId != null) {
+            workTimeline( sessionId, sb )
+        }
+
         return sb.toString()
+    }
+
+    /**
+     * 現在の会話に関連する作業タイムライン情報をシステムプロンプトに追加する。
+     * 過去の事実・現在の状態・未完了作業・判断履歴を区別し、日時不明の情報に推測の日時を付与しない。
+     */
+    private suspend fun workTimeline(chatSessionId: String, sb: StringBuilder) {
+        // 関連する作業セッションを取得（最新 1 件）
+        val sessions = workTimelineRepository.getWorkSessionsByChat(chatSessionId)
+        if (sessions.isEmpty()) return
+
+        val session = sessions.first()
+        val sessionId = session.id
+
+        // 作業状態を取得
+        val state = workTimelineRepository.getWorkState(sessionId)
+
+        // 作業イベントを取得（直近 20 件）
+        val events = workTimelineRepository.getWorkEvents(sessionId).takeLast(20)
+
+        // 判断履歴を取得（直近 10 件）
+        val judgments = workTimelineRepository.getJudgments(sessionId).takeLast(10)
+
+        sb.append("\n\n# 作業タイムライン（Work Timeline）\n")
+
+        // 現在の作業状態
+        sb.append("## 現在の状態\n")
+        if (state != null) {
+            sb.append("- フェーズ: ").append(state.currentPhase ?: "不明").append('\n')
+            sb.append("- ステータス: ").append(state.currentStatus ?: "不明").append('\n')
+            sb.append("- 最終判断: ").append(state.lastJudgment ?: "なし").append('\n')
+            sb.append("- 更新日時: ").append(JstTimeUtils.toJstString(state.updatedAt)).append(" (JST)").append('\n')
+        } else {
+            sb.append("- 作業状態は未記録です。\n")
+        }
+
+        // 作業セッション情報
+        sb.append("\n## 作業セッション\n")
+        sb.append("- ID: ").append(sessionId).append('\n')
+        sb.append("- 状態: ").append(session.status).append('\n')
+        session.startedAt?.let { sb.append("- 開始日時: ").append(JstTimeUtils.toJstString(it)).append(" (JST)").append('\n') }
+        session.pausedAt?.let { sb.append("- 中断日時: ").append(JstTimeUtils.toJstString(it)).append(" (JST)").append('\n') }
+        session.resumedAt?.let { sb.append("- 再開日時: ").append(JstTimeUtils.toJstString(it)).append(" (JST)").append('\n') }
+        session.finishedAt?.let { sb.append("- 完了日時: ").append(JstTimeUtils.toJstString(it)).append(" (JST)").append('\n') }
+        session.description?.let { sb.append("- 説明: ").append(it).append('\n') }
+
+        // 過去の作業イベント
+        sb.append("\n## 過去の作業イベント（直近 20 件）\n")
+        if (events.isEmpty()) {
+            sb.append("- 作業イベントは記録されていません。\n")
+        } else {
+            events.forEach { event ->
+                sb.append("- [").append(JstTimeUtils.toJstString(event.eventTimestamp)).append(" JST] ")
+                    .append(event.eventType)
+                    .append(": ")
+                    .append(event.description)
+                    .append('\n')
+            }
+        }
+
+        // 判断履歴
+        sb.append("\n## 判断履歴（直近 10 件）\n")
+        if (judgments.isEmpty()) {
+            sb.append("- 判断履歴は記録されていません。\n")
+        } else {
+            judgments.forEach { judgment ->
+                sb.append("- [").append(JstTimeUtils.toJstString(judgment.judgmentAt)).append(" JST] ")
+                    .append(judgment.judgmentText)
+                    .append('\n')
+            }
+        }
+
+        sb.append("\n---\n")
+        sb.append("注: 上記の日時はすべて JST（日本標準時）です。発生日時が不明な情報には推測の日時を付与していません。\n")
     }
 
     private fun readWorkspaceDoc(workspace: WorkspaceFs, name: String): String? = runCatching {

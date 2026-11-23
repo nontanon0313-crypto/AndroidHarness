@@ -303,6 +303,10 @@ class SessionRepository(
                 artifactJson = message.artifact?.let(com.androidharness.app.artifacts.ChatArtifact::encode),
                 turnId = turnId,
                 createdAt = System.currentTimeMillis(),
+                // 新規：元の発言日時情報（ChatMessage から受け取った値、null 可）
+                originalTimestamp = message.originalTimestamp,
+                timestampSource = message.timestampSource,
+                timestampReliability = message.timestampReliability,
             )
         )
         db.dao().touchSession(sessionId, System.currentTimeMillis())
@@ -1006,5 +1010,9 @@ class SessionRepository(
         turnId = turnId,
         id = id,
         createdAt = createdAt,
+        // 新規：元の発言日時情報（取得できない場合は null）
+        originalTimestamp = originalTimestamp,
+        timestampSource = timestampSource,
+        timestampReliability = timestampReliability,
     )
 }

@@ -75,4 +75,10 @@ data class ChatMessage(
     val createdAt: Long = 0,
     val artifact: com.androidharness.app.artifacts.ChatArtifact? = null,
     val generation: GenerationMetadata = GenerationMetadata(),
+    // 新規：元の発言日時（取得できない場合は null。DB記録日時で代用しない）。
+    val originalTimestamp: Long? = null,
+    // 新規：日時の取得元。
+    val timestampSource: String? = null,
+    // 新規：日時の信頼性。
+    val timestampReliability: String? = null,
 )

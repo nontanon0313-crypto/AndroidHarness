@@ -1,8 +1,8 @@
 # AndroidHarness repo wiki
 
-Last updated 07/11/2026, generated from `main` at commit `aae55c4`.
+Last updated 23/11/2026, generated from `main` at commit `aae55c4`.
 
-75 pages covering the app's architecture, runtime, tools, UI and operations. Each page names the classes and files it describes, includes a flow diagram where one applies, and ends with links to the source it was written from.
+76 pages covering the app's architecture, runtime, tools, UI and operations. Each page names the classes and files it describes, includes a flow diagram where one applies, and ends with links to the source it was written from.
 
 Since the previous edition (September 2026) the app grew a separate Chat section, Live Mode, universal memory, scheduled automations, Telegram control, plugins and marketplaces, a skills manager, local models with GPU support, 9Router, SSH and FTP workspaces, an interactive terminal, the storage inventory, a settings search, 21 languages and a large amount of provider and compaction work. Pages 05 to 13, 21 to 22, 26 to 32, 40, 44, 52 to 58, 59 to 63, 64 to 67, 71 and 75 are new or substantially rewritten for that work.
 
@@ -112,3 +112,4 @@ Since the previous edition (September 2026) the app grew a separate Chat section
 - [Troubleshooting and Diagnostics](73-troubleshooting-and-diagnostics.md)
 - [Build, CI, and Testing](74-build-ci-and-testing.md)
 - [Shared Core Models and Pure Utilities](75-shared-core-models.md)
+- [Work Timeline and Time Management](76-work-timeline-and-time-management.md)

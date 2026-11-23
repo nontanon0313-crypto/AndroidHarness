@@ -59,8 +59,84 @@ data class MessageEntity(
     val imagesJson: String = "[]",
     val turnId: String? = null,
     val createdAt: Long,
+    /** 元の発言日時（取得できない場合は null。DB記録日時で代用しない）。 */
+    val originalTimestamp: Long? = null,
+    /** 日時の取得元（例: "system", "message_header", "client_clock", null）。 */
+    val timestampSource: String? = null,
+    /** 日時の信頼性（例: "high", "low", "unknown", null）。 */
+    val timestampReliability: String? = null,
     val artifactJson: String? = null,
     val generationJson: String? = null,
+)
+
+/** 作業イベント：作業開始・計画・実行・中断・再開・完了・エラー・検証など。 */
+@Entity(
+    tableName = "work_events",
+    indices = [
+        Index("sessionId"),
+        Index("eventTimestamp"),
+    ],
+)
+data class WorkEventEntity(
+    @PrimaryKey val id: String,
+    val sessionId: String,
+    val eventType: String,
+    /** イベント発生時刻（UTC エポックミリ秒）。取得できない場合は recordTimestamp と同じ値。 */
+    val eventTimestamp: Long,
+    /** DB記録日時（UTC エポックミリ秒）。 */
+    val recordTimestamp: Long,
+    val description: String,
+    val relatedMessageId: String? = null,
+    val metadata: String? = null,
+)
+
+/** 作業セッション：1 つの作業単位。 */
+@Entity(
+    tableName = "work_sessions",
+    indices = [
+        Index("startedAt"),
+        Index("finishedAt"),
+        Index("chatSessionId"),
+    ],
+)
+data class WorkSessionEntity(
+    @PrimaryKey val id: String,
+    val chatSessionId: String? = null,
+    val status: String, // started / paused / resumed / finished
+    val startedAt: Long?,
+    val pausedAt: Long?,
+    val resumedAt: Long?,
+    val finishedAt: Long?,
+    val description: String? = null,
+)
+
+/** 作業状態：現在のフェーズ、ステータス、最新判断など。 */
+@Entity(tableName = "work_states", indices = [Index("updatedAt")])
+data class WorkStateEntity(
+    @PrimaryKey val sessionId: String,
+    val currentPhase: String? = null,
+    val lastJudgment: String? = null,
+    val currentStatus: String? = null,
+    val latestResult: String? = null,
+    val updatedAt: Long,
+)
+
+/** 判断履歴：AI が行った判断とその時刻。 */
+@Entity(
+    tableName = "judgments",
+    indices = [
+        Index("sessionId"),
+        Index("judgmentAt"),
+    ],
+)
+data class JudgmentEntity(
+    @PrimaryKey val id: String,
+    val sessionId: String,
+    val judgmentText: String,
+    /** 判断時刻（UTC エポックミリ秒）。 */
+    val judgmentAt: Long,
+    /** システム記録日時（UTC エポックミリ秒）。 */
+    val recordTimestamp: Long,
 )
 
 @Entity(tableName = "chat_answer_versions", indices = [Index("sessionId")])
@@ -827,6 +903,66 @@ interface HarnessDao {
 
     @Query("DELETE FROM session_file_changes WHERE sessionId = :sessionId")
     suspend fun deleteSessionFileChanges(sessionId: String)
+
+    // === Work Events ===
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertWorkEvent(event: WorkEventEntity)
+
+    @Query("SELECT * FROM work_events WHERE sessionId = :sessionId ORDER BY eventTimestamp ASC, rowid ASC")
+    suspend fun getWorkEvents(sessionId: String): List<WorkEventEntity>
+
+    @Query("SELECT * FROM work_events WHERE eventTimestamp >= :fromTs AND eventTimestamp <= :toTs ORDER BY eventTimestamp ASC")
+    suspend fun getWorkEventsByTimeRange(fromTs: Long, toTs: Long): List<WorkEventEntity>
+
+    // === Work Sessions ===
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertWorkSession(session: WorkSessionEntity)
+
+    @Query("SELECT * FROM work_sessions WHERE id = :id")
+    suspend fun getWorkSession(id: String): WorkSessionEntity?
+
+    @Query("SELECT * FROM work_sessions WHERE chatSessionId = :chatSessionId ORDER BY startedAt DESC")
+    suspend fun getWorkSessionsByChat(chatSessionId: String): List<WorkSessionEntity>
+
+    // === Work States ===
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertWorkState(state: WorkStateEntity)
+
+    @Query("SELECT * FROM work_states WHERE sessionId = :sessionId")
+    suspend fun getWorkState(sessionId: String): WorkStateEntity?
+
+    // === Judgments ===
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertJudgment(judgment: JudgmentEntity)
+
+    @Query("SELECT * FROM judgments WHERE sessionId = :sessionId ORDER BY judgmentAt ASC")
+    suspend fun getJudgments(sessionId: String): List<JudgmentEntity>
+
+    @Query("SELECT * FROM judgments WHERE judgmentAt >= :fromTs AND judgmentAt <= :toTs ORDER BY judgmentAt ASC")
+    suspend fun getJudgmentsByTimeRange(fromTs: Long, toTs: Long): List<JudgmentEntity>
+
+    // === 時系列統合ビュー ===
+    @Query("""
+        SELECT 'message' AS kind, id, sessionId, createdAt AS ts, role AS type, text AS detail
+        FROM messages WHERE createdAt >= :fromTs AND createdAt <= :toTs
+        UNION ALL
+        SELECT 'work_event' AS kind, id, sessionId, eventTimestamp AS ts, eventType AS type, description AS detail
+        FROM work_events WHERE eventTimestamp >= :fromTs AND eventTimestamp <= :toTs
+        UNION ALL
+        SELECT 'judgment' AS kind, id, sessionId, judgmentAt AS ts, 'judgment' AS type, judgmentText AS detail
+        FROM judgments WHERE judgmentAt >= :fromTs AND judgmentAt <= :toTs
+        ORDER BY ts ASC
+    """)
+    suspend fun getTimelineByTimeRange(fromTs: Long, toTs: Long): List<TimelineEntry>
+
+    data class TimelineEntry(
+        val kind: String,
+        val id: String,
+        val sessionId: String,
+        val ts: Long,
+        val type: String,
+        val detail: String?,
+    )
 }
 
 @Database(
@@ -845,8 +981,12 @@ interface HarnessDao {
         MemoryEntity::class,
         ChatAnswerVersionEntity::class,
         SavedAnswerEntity::class,
+        WorkEventEntity::class,
+        WorkSessionEntity::class,
+        WorkStateEntity::class,
+        JudgmentEntity::class,
     ],
-    version = 27,
+    version = 28,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -856,6 +996,70 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_26_27 = object : androidx.room.migration.Migration(26, 27) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE work_projects ADD COLUMN chatNamePattern TEXT")
+            }
+        }
+        val MIGRATION_27_28 = object : androidx.room.migration.Migration(27, 28) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // MessageEntity に新規カラムを追加（既存データは維持、デフォルト null）
+                db.execSQL("ALTER TABLE messages ADD COLUMN originalTimestamp INTEGER")
+                db.execSQL("ALTER TABLE messages ADD COLUMN timestampSource TEXT")
+                db.execSQL("ALTER TABLE messages ADD COLUMN timestampReliability TEXT")
+
+                // 新規テーブル作成
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS work_events (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        sessionId TEXT NOT NULL,
+                        eventType TEXT NOT NULL,
+                        eventTimestamp INTEGER NOT NULL,
+                        recordTimestamp INTEGER NOT NULL,
+                        description TEXT NOT NULL,
+                        relatedMessageId TEXT,
+                        metadata TEXT
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_work_events_sessionId ON work_events(sessionId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_work_events_eventTimestamp ON work_events(eventTimestamp)")
+
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS work_sessions (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        chatSessionId TEXT,
+                        status TEXT NOT NULL,
+                        startedAt INTEGER,
+                        pausedAt INTEGER,
+                        resumedAt INTEGER,
+                        finishedAt INTEGER,
+                        description TEXT
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_work_sessions_startedAt ON work_sessions(startedAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_work_sessions_finishedAt ON work_sessions(finishedAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_work_sessions_chatSessionId ON work_sessions(chatSessionId)")
+
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS work_states (
+                        sessionId TEXT NOT NULL PRIMARY KEY,
+                        currentPhase TEXT,
+                        lastJudgment TEXT,
+                        currentStatus TEXT,
+                        latestResult TEXT,
+                        updatedAt INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_work_states_updatedAt ON work_states(updatedAt)")
+
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS judgments (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        sessionId TEXT NOT NULL,
+                        judgmentText TEXT NOT NULL,
+                        judgmentAt INTEGER NOT NULL,
+                        recordTimestamp INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_judgments_sessionId ON judgments(sessionId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_judgments_judgmentAt ON judgments(judgmentAt)")
             }
         }
         val MIGRATION_25_26 = object : androidx.room.migration.Migration(25, 26) {
